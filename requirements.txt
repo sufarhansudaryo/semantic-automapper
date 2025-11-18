@@ -3,3 +3,4 @@ openpyxl
 google-genai
 python-dotenv
 tqdm
+scikit-learn
