@@ -13,6 +13,13 @@ from an Excel file using the Gemini API via Google Vertex AI or Google AI API. U
 can specify the Excel file, sheet name, and the column containing text data for which
 embeddings are to be generated.
 
+Note:
+-----
+For authentication:
+Create a service account and assign the "Vertex AI User" role ->
+Generate and download the JSON key file (for authentication) ->
+Set the environment variable `GOOGLE_APPLICATION_CREDENTIALS` to point to this file.
+
 Usage Example:
 --------------
 python generate_embeddings.py \
@@ -27,7 +34,7 @@ Requirements:
 -------------
 - https://docs.cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-text-embeddings
 - Environment variables set in `.env.local` in project root:
-    GOOGLE_API_KEY=...  or
+    GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
     GOOGLE_CLOUD_PROJECT=...
     GOOGLE_CLOUD_LOCATION=...
     GOOGLE_GENAI_USE_VERTEXAI=True
@@ -102,3 +109,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

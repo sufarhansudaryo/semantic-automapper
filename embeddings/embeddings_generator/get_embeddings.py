@@ -75,6 +75,11 @@ def generate_embeddings(
     except Exception as e:
         tqdm.write(f"Error reading Excel file: {e}")
         return None
+    
+    # Show exact column names from Excel
+    print("\nDEBUG: Columns loaded from Excel")
+    print(df.columns.tolist())
+    print("=======================================\n")
 
     if text_column not in df.columns:
         tqdm.write(f"Column '{text_column}' not found.")
