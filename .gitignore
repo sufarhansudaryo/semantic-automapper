@@ -1,3 +1,5 @@
 .DS_Store
 .env.local
 __pycache__/
+credentials/
+*.pkl
