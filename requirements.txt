@@ -4,3 +4,4 @@ google-genai
 python-dotenv
 tqdm
 scikit-learn
+mlx-lm
