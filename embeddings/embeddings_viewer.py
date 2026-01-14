@@ -19,7 +19,7 @@ Features:
 
 Usage Example:
 --------------
-python view_pickle.py path/to/file.pkl --preview 5 --output output.json
+python embedding_viewer.py path/to/file.pkl --preview 5 --output output.json
 """
 
 
