@@ -14,9 +14,28 @@ def _normalize(s: str) -> str:
 
 def build_replacements_map(abbrev_path: str, sheet_col="Sheet", code_col="Code", desc_col="Description"):
     """
-    Returns:
-      replacements_by_sheet: dict[sheet_name] -> list[(code, description)]
-      warnings: list[str]
+   Build a per-sheet abbreviation replacement map from an Excel file.
+
+   The abbreviations Excel file is expected to contain at least these columns:
+   - sheet_col (default: "Sheet"): worksheet/category name in the target workbook
+   - code_col  (default: "Code"): abbreviation/code to be replaced
+   - desc_col  (default: "Description"): expanded text to replace the code with
+
+   Behavior:
+   - Trims whitespace from Code/Description/Sheet fields.
+   - Drops rows where Code or Sheet is empty.
+   - Groups rows by Sheet and produces a mapping:
+        replacements_by_sheet[sheet_name] = [(code, description), ...]
+   - If the same Code appears multiple times within the same Sheet with different Descriptions,
+      a warning is recorded and the first occurrence is used.
+   - Sorts replacement pairs by code length (longer first) to reduce partial-overlap issues
+      (e.g., replacing "ATR" before "AT").
+
+   Returns:
+        replacements_by_sheet: dict[str, list[tuple[str, str]]]
+            Mapping of worksheet name -> list of (code, description) replacements.
+        warnings: list[str]
+            Human-readable warnings about ambiguous codes and other issues.
     """
     df = pd.read_excel(abbrev_path)
 

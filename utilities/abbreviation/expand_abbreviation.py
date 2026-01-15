@@ -13,6 +13,60 @@ from tqdm import tqdm
 from google import genai
 from dotenv import load_dotenv
 
+"""
+LLM-based Abbreviation Expansion for Multi-Sheet Excel Workbooks (Gemini).
+
+Purpose
+-------
+This script expands abbreviations in industrial item descriptions stored in an Excel workbook.
+Instead of applying a fixed rule-based replacement table, it uses a Gemini LLM to expand only
+those abbreviations that are strongly supported by the row context (other columns in the same row)
+and the worksheet name. This reduces incorrect expansions when abbreviations are ambiguous.
+
+What this script needs
+----------------------
+1) Input Excel workbook (multi-sheet) containing at least:
+   - A description column (default: "Description") to be expanded.
+   - An item identifier column (default: first column in each sheet, or ID_COL_NAME if set).
+   - Optional context columns (any additional columns) that help disambiguate abbreviations.
+
+2) Gemini API access via google-genai:
+   - A `.env.local` file must exist in the project root (one directory above this script).
+   - The `.env.local` file must contain the environment variables required by `google.genai`
+     (e.g., API key configuration depending on your setup).
+
+How it works
+------------
+- Reads all worksheets in the input workbook.
+- Only processes worksheets that contain the configured description column (DESC_COL).
+- For each row with a non-empty description:
+  - Builds a `context` dict from all other non-empty columns (excluding ID and description).
+  - Builds a prompt containing:
+      * strict expansion rules (no invention, preserve numbers/units/IDs, single-line output)
+      * few-shot examples (FEW_SHOT_EXAMPLES) to enforce style and known expansions
+      * the current sheet name, item ID, description, and context
+  - Sends the prompt to Gemini.
+- Writes the model result to a new output column (OUT_COL). If the model output fails validation,
+  it falls back to the original description.
+
+Inputs / Outputs
+----------------
+Input:
+  - `input_xlsx`: path to the source workbook (e.g., items_logic_complete.xlsx)
+
+Output:
+  - `output_xlsx`: path to the new workbook containing all original sheets and a new expanded
+    description column (OUT_COL), written using the openpyxl engine.
+
+Configuration
+-------------
+- DESC_COL: source description column name (default: "Description")
+- OUT_COL: output column name for expanded text (default: "Description_Expanded")
+- ID_COL_NAME: optional fixed ID column name; if None, the first column is treated as ID
+- MAX_WORKERS, RETRIES, RETRY_DELAY: runtime and robustness parameters
+- FEW_SHOT_EXAMPLES: editable examples controlling style and common expansions
+"""
+
 
 # ----------------------------
 # Config

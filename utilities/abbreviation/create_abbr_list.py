@@ -1,8 +1,32 @@
 import pandas as pd
 
+"""
+Expand Abbreviation Lists from Excel into a Flat Table.
+
+This script reads an Excel file where:
+- Column A (index 0) contains one cell per row with multiple abbreviation mappings,
+  stored as a comma-separated list in the form:
+      "ABBR1=Description 1, ABBR2=Description 2, ..."
+
+- Column B (index 1) contains the corresponding sheet/category name for that row.
+
+The script expands each abbreviation mapping into its own row and outputs a clean table
+with the columns:
+    Code | Description | Sheet
+
+Malformed entries (without "=") are still included, but with an empty Description.
+
+Input:
+    /Users/sufarhansudaryo/Documents/Work/semantic-automapper/data/excel_files/Abbreviation.xlsx
+
+Output:
+    /Users/sufarhansudaryo/Documents/Work/semantic-automapper/data/excel_files/Abbreviation_expanded.xlsx
+"""
+
+
 # Input & Output paths
-input_file = "/Users/sufarhansudaryo/Documents/Work/semantic-automapper/data/excel_files/Abbreviation.xlsx"
-output_file = "/Users/sufarhansudaryo/Documents/Work/semantic-automapper/data/excel_files/Abbreviation_expanded.xlsx"
+input_file = "path/to/your/input/Abbreviation.xlsx"
+output_file = "path/to/your/output/Abbreviation_expanded.xlsx"
 
 # Read the Excel file
 df = pd.read_excel(input_file, header=None)

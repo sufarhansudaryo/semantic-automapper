@@ -19,22 +19,65 @@ from dotenv import load_dotenv
 
 
 """
-Automatic Item-to-Class Assignment using Fuzzy + Embedding Similarity + OPTIONAL Gemini Rerank
----------------------------------------------------------------------------------------------
+Automatic Item-to-Class Assignment (Fuzzy + Cosine + Optional Gemini Rerank)
+---------------------------------------------------------------------------
 
-Two-phase inside ONE run (still single script):
-Phase A) Compute cosine (top-3 for output, top-K for LLM) for ALL items
-Phase B) Run Gemini only AFTER cosine is done (optional), with its own progress bar
+Purpose
+-------
+Assign the best matching taxonomy/class to each item by combining:
+- Fuzzy string matching (RapidFuzz) to narrow the class search space,
+- Embedding cosine similarity to rank candidate classes, and
+- OPTIONAL Gemini reranking to choose the single best class from Top-K candidates.
 
-Additions (NEW):
-- Autosave partial results every N LLM items: --autosave_every N
-- Resume from partial autosave: --resume_partial
-- Timeout per Gemini call: --llm_timeout_s 60
+Workflow (Two-phase)
+--------------------
+Phase A (always):
+1) Load items + classes from Excel and embeddings from pickle.
+2) If fuzzy hits exist for an item, expand matched classes into their lowest-level descendants
+   using the class hierarchy (parent_id).
+3) Compute cosine similarity against lowest-level class embeddings and store:
+   - Top-N (default 3) cosine predictions for output
+   - Top-K (default 5) candidates for the LLM stage
 
-Also supports using a different column for the LLM item name than the embedding/fuzzy name:
-- item_name_col: used for fuzzy matching + cosine candidates logic
-- llm_item_name_col: used ONLY for the LLM prompt (e.g. original "description")
+Phase B (optional, --use_llm):
+4) After cosine is finished, send each item’s Top-K candidates + optional context columns to Gemini.
+5) Gemini must pick exactly ONE candidate class_id and return JSON:
+   {"choice_id": "...", "reasoning": "..."}
+6) Store Gemini results in llm_class_id / llm_class_name / llm_reasoning.
+
+Reliability Features
+--------------------
+- Autosave partial LLM results every N items: --autosave_every N (writes <output_base>.partial.xlsx)
+- Resume from partial autosave: --resume_partial (skips items with llm_class_id already filled)
+- Per-call Gemini timeout: --llm_timeout_s <seconds>
+- Optional LLM gating: --llm_only_if_margin_below <m> (call LLM only if top1-top2 cosine margin < m)
+
+Inputs Needed
+-------------
+- Items Excel: must include item_id_col + item_name_col (plus optional context columns)
+- Classes Excel: must include class_id_col + class_name_col + parent_id
+  (optional: lowest_level_col, level, and extra class context columns)
+- Pickles: item_embeddings (item_id -> vector), class_embeddings (class_id -> vector)
+- Gemini credentials (only if --use_llm), loaded from --dotenv_path or <project_root>/.env.local
+
+Output
+------
+An Excel file with:
+- Top-1/2/3 cosine predictions (+ similarity)
+- Fuzzy debug columns
+- Optional Gemini rerank fields (llm_*),
+merged back with the original items and Top-1 class metadata.
+
+Example
+-------
+python assign.py --items_embeddings items.pkl --classes_embeddings classes.pkl \
+  --items_excel items.xlsx --classes_excel classes.xlsx \
+  --item_id_col item_id --item_name_col item_name \
+  --class_id_col class_id --class_name_col class_name \
+  --use_llm --llm_top_k 5 --autosave_every 100 --resume_partial \
+  --llm_timeout_s 60 --output assignments.xlsx
 """
+
 
 
 # Utilities
