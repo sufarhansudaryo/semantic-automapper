@@ -20,7 +20,6 @@ from tqdm import tqdm
 from mlx_lm import load, batch_generate
 
 
-# ---------------- GLOBAL MODEL ----------------
 _model = None
 _tokenizer = None
 

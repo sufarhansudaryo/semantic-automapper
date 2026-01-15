@@ -15,7 +15,7 @@ from google import genai
 from dotenv import load_dotenv
 
 
-# Config
+# Configurations 
 DESC_COL_PRIMARY = "Description_Expanded"
 DESC_COL_FALLBACK = "Description"
 OUT_COL = "Item_Name"
