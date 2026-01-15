@@ -171,11 +171,24 @@ python automapper/semantic_automapper.py \
 - Use [automapper/validator.py](automapper/validator.py) to color-code Top-1/2/3 matches and create a summary sheet.
 - Use [embeddings/embeddings_viewer.py](embeddings/embeddings_viewer.py) to preview and convert embeddings `.pkl` files.
 
-## Tips and notes
-- Column normalization: the automapper lowercases and strips column names before matching — ensure CLI column names match the Excel headers (or run the extractor UI).
-- Empty / missing text rows are skipped by the embedding generator.
-- The hierarchy builder forward-fills parent cells before generating unique node IDs and marks leaves via `lowest_level_class`.
-- Keep credentials out of the repo; use `.env.local` and a secure service account key.
+## Tips and Notes
+
+**Abbreviations and Embedding Quality:** 
+
+Industrial item descriptions often contain abbreviations/shorthand (e.g., C/W, GALV, GRD). Since abbreviation usage differs across datasets and depends heavily on context, embeddings may become less accurate, which can reduce mapping quality. Therefore, it is important that we first try to solve the abbreviations issues in the datasets. A key improvement is to expand abbreviations before generating embeddings / running the automapper, ideally by using an abbreviation list (per dataset or per sheet/category), if there is any. 
+
+Example abbreviation utilities in this repo: 
+utilities/abbreviation/expand_abbreviation.py 
+(Using LLM to expand abbreviation in the items' description by utilizing the item's extra context information)
+
+**Main Item Name Extraction (Description → `Item_Name`):**
+Industrial descriptions often include noise (dimensions, units, standards, packaging), which reduces embedding + fuzzy matching quality. A key improvement is to **extract only the main item name**
+before generating embeddings / running the automapper.
+
+Example utility in this repo:
+- `utilities/extract_main_name.py`  
+  (LLM-based extraction using few-shot prompting + threading + retries. Prefers `Description_Expanded`, falls back to `Description`.)
+
 
 ## Useful links (files & symbols)
 - [automapper/semantic_automapper.py](automapper/semantic_automapper.py) — main automapper CLI
