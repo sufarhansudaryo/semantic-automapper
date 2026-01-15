@@ -4,6 +4,7 @@ import argparse
 import pickle
 import time
 import json
+import concurrent.futures
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -25,12 +26,14 @@ Two-phase inside ONE run (still single script):
 Phase A) Compute cosine (top-3 for output, top-K for LLM) for ALL items
 Phase B) Run Gemini only AFTER cosine is done (optional), with its own progress bar
 
-Also supports using a different column for the LLM item name than the embedding/fuzzy name:
-- item_name_col: used for fuzzy matching + cosine candidates logic (same as before)
-- llm_item_name_col: used ONLY for the LLM prompt (e.g. original "description")
+Additions (NEW):
+- Autosave partial results every N LLM items: --autosave_every N
+- Resume from partial autosave: --resume_partial
+- Timeout per Gemini call: --llm_timeout_s 60
 
-New CLI:
-- --llm_item_name_col   (optional; if not set, defaults to --item_name_col)
+Also supports using a different column for the LLM item name than the embedding/fuzzy name:
+- item_name_col: used for fuzzy matching + cosine candidates logic
+- llm_item_name_col: used ONLY for the LLM prompt (e.g. original "description")
 """
 
 
@@ -115,8 +118,6 @@ RERANK_FEW_SHOTS: List[Dict[str, Any]] = [
                 {"class_id": "155", "class_name": "Domed Omega Bolt Plates", "cosine_similarity": 0.8425},
                 {"class_id": "156", "class_name": "Combi Plates / X-plates for MD-MDX", "cosine_similarity": 0.8324},
                 {"class_id": "157", "class_name": "Flat Plates", "cosine_similarity": 0.8120},
-                {"class_id": "158", "class_name": "Octo Plates", "cosine_similarity": 0.8020},
-                {"class_id": "159", "class_name": "Star-shaped Plates", "cosine_similarity": 0.7815},
             ],
         },
         "output": {
@@ -163,19 +164,31 @@ def call_gemini_with_retries(
     model: str,
     retries: int,
     delay: float,
+    timeout_s: float = 0.0,  # NEW
 ) -> str:
+    def _one_call() -> str:
+        resp = client.models.generate_content(model=model, contents=prompt)
+        return (resp.text or "").strip()
+
     for attempt in range(retries):
         try:
-            resp = client.models.generate_content(
-                model=model,
-                contents=prompt,
-            )
-            return (resp.text or "").strip()
-        except Exception as e:
-            if attempt < retries - 1:
-                time.sleep(delay)
+            if timeout_s and timeout_s > 0:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_one_call)
+                    return fut.result(timeout=timeout_s)
             else:
-                return f"ERROR: {str(e)}"
+                return _one_call()
+        except concurrent.futures.TimeoutError:
+            err = f"ERROR: Gemini call timed out after {timeout_s}s"
+        except Exception as e:
+            err = f"ERROR: {str(e)}"
+
+        if attempt < retries - 1:
+            time.sleep(delay)
+        else:
+            return err
+
+    return "ERROR: Unknown error"
 
 
 def clean_json_from_text(text: str) -> Optional[Dict[str, Any]]:
@@ -208,7 +221,7 @@ def build_rerank_prompt(
             "item_name": item_name,
             "item_context": item_context,
         },
-        "candidates": candidates,
+        "candidates": candidates,  # can be < K, totally fine
     }
 
     return f"""
@@ -280,9 +293,17 @@ def llm_choose_best_class(
     candidates: List[Dict[str, Any]],
     retries: int,
     retry_delay: float,
+    llm_timeout_s: float = 0.0,  # NEW
 ) -> Tuple[Optional[str], str]:
     prompt = build_rerank_prompt(item_name=item_name, item_context=item_context, candidates=candidates)
-    raw = call_gemini_with_retries(client, prompt, model=model, retries=retries, delay=retry_delay)
+    raw = call_gemini_with_retries(
+        client,
+        prompt,
+        model=model,
+        retries=retries,
+        delay=retry_delay,
+        timeout_s=llm_timeout_s,
+    )
 
     if raw.startswith("ERROR:"):
         return None, raw
@@ -308,15 +329,15 @@ def assign_classes(
     item_embeddings: Dict[Any, np.ndarray],
     class_embeddings: Dict[Any, np.ndarray],
     item_id_col: str,
-    item_name_col: str,             # used for fuzzy + cosine pipeline
+    item_name_col: str,  # used for fuzzy + cosine pipeline
     class_id_col: str,
     class_name_col: str,
     lowest_level_col: str = "lowest_level_class",
     fuzzy_threshold: float = 0.6,
     batch_size: int = 256,
     # Output:
-    final_top_n: int = 3,           # output cosine top-3
-    llm_top_k: int = 5,             # send top-5 cosine candidates to LLM
+    final_top_n: int = 3,  # output cosine top-3
+    llm_top_k: int = 5,  # send top-5 cosine candidates to LLM
     # LLM:
     use_llm: bool = False,
     llm_model: str = "gemini-2.5-flash",
@@ -326,18 +347,29 @@ def assign_classes(
     llm_retries: int = 3,
     llm_retry_delay: float = 2.0,
     llm_only_if_margin_below: Optional[float] = None,
-    # NEW: LLM uses this column for item name (e.g. "description")
-    llm_item_name_col: Optional[str] = None,
+    llm_item_name_col: Optional[str] = None,  # LLM uses this column for item name (e.g. "description")
+    # NEW:
+    autosave_every: int = 0,
+    autosave_path: Optional[str] = None,
+    resume_partial: bool = False,
+    llm_timeout_s: float = 0.0,
 ) -> pd.DataFrame:
     """
     Two-phase processing:
     1) Compute cosine similarities for all items (and store top-K candidates for LLM).
     2) Run LLM rerank after cosine is finished (with its own progress bar).
+
+    NEW:
+    - Autosave partial results every N LLM items
+    - Resume from partial autosave (skip items already done + carry their llm_* fields forward)
+    - Per-call timeout for Gemini
     """
 
-    # Default: if not provided, LLM uses the same as pipeline name
     if llm_item_name_col is None:
         llm_item_name_col = item_name_col
+
+    if autosave_path is None:
+        autosave_path = "autosave_partial.xlsx"
 
     results: List[Dict[str, Any]] = []
     classes_df_all = classes_df.copy()
@@ -457,7 +489,6 @@ def assign_classes(
     print(f"  - Items with fuzzy matches: {len(fuzzy_groups)}")
     print(f"  - Items with no fuzzy matches: {len(nonfuzzy_items)}\n")
 
-
     # Phase A: cosine for ALL items (store top3 + topK candidates info for LLM)
     cosine_payload_by_item: Dict[Any, Dict[str, Any]] = {}
 
@@ -565,8 +596,57 @@ def assign_classes(
     # index results by item_id for fast fill
     result_idx_by_item: Dict[Any, int] = {row[item_id_col]: i for i, row in enumerate(results)}
 
-    llm_items = []
+    # ----------------------------
+    # RESUME: load partial autosave (if requested) and carry over llm_* fields
+    # ----------------------------
+    done_ids: set = set()
+    carried_llm: Dict[Any, Dict[str, Any]] = {}
+
+    if resume_partial:
+        ap = Path(autosave_path)
+        if ap.exists():
+            try:
+                prev = pd.read_excel(ap)
+                prev.columns = prev.columns.str.strip().str.lower()
+                if item_id_col in prev.columns and "llm_class_id" in prev.columns:
+                    # items that are "done"
+                    done = prev[
+                        prev["llm_class_id"].notna()
+                        & (prev["llm_class_id"].astype(str).str.strip().str.len() > 0)
+                    ].copy()
+                    done_ids = set(done[item_id_col].tolist())
+
+                    # carry llm_* results into current results
+                    for _, r in done.iterrows():
+                        carried_llm[r[item_id_col]] = {
+                            "llm_class_id": r.get("llm_class_id", None),
+                            "llm_class_name": r.get("llm_class_name", None),
+                            "llm_reasoning": r.get("llm_reasoning", ""),
+                        }
+
+                    # apply carried fields
+                    for iid, fields in carried_llm.items():
+                        ridx = result_idx_by_item.get(iid)
+                        if ridx is not None:
+                            results[ridx]["llm_class_id"] = fields["llm_class_id"]
+                            results[ridx]["llm_class_name"] = fields["llm_class_name"]
+                            results[ridx]["llm_reasoning"] = fields["llm_reasoning"] or ""
+
+                    print(f"Resume enabled: loaded {len(done_ids)} completed LLM items from '{ap.name}'.")
+            except Exception as e:
+                print(f"Resume warning: failed to read '{autosave_path}': {e}")
+
+    def _autosave_now():
+        try:
+            pd.DataFrame(results).to_excel(autosave_path, index=False)
+        except Exception as e:
+            print(f"Autosave failed ({autosave_path}): {e}")
+
+    # build LLM worklist (skip already done)
+    llm_items: List[Any] = []
     for item_id, payload in cosine_payload_by_item.items():
+        if item_id in done_ids:
+            continue
         if should_call_llm(payload["sims_sorted_topk"]):
             llm_items.append(item_id)
 
@@ -577,14 +657,16 @@ def assign_classes(
         payload = cosine_payload_by_item[item_id]
         sims_sorted_topk: List[Tuple[int, float]] = payload["sims_sorted_topk"]
 
-        # item row for context + LLM name column
         item_row = items_df.loc[items_df[item_id_col] == item_id]
         if item_row.empty:
             pbar_llm.update(1)
             continue
 
-        # IMPORTANT: Use LLM item name col here (e.g. "description")
-        llm_item_name = str(item_row[llm_item_name_col].iloc[0]) if llm_item_name_col in item_row.columns else payload["item_name_pipeline"]
+        llm_item_name = (
+            str(item_row[llm_item_name_col].iloc[0])
+            if (llm_item_name_col in item_row.columns)
+            else payload["item_name_pipeline"]
+        )
 
         item_ctx: Dict[str, str] = build_context_from_row(
             item_row.iloc[0],
@@ -626,6 +708,7 @@ def assign_classes(
                 candidates=candidates,
                 retries=llm_retries,
                 retry_delay=llm_retry_delay,
+                llm_timeout_s=llm_timeout_s,
             )
             llm_cache[cache_key] = (choice_id, reasoning)
 
@@ -636,16 +719,26 @@ def assign_classes(
                     choice_name = str(c["class_name"])
                     break
 
-        # write back into results
         ridx = result_idx_by_item.get(item_id)
         if ridx is not None:
             results[ridx]["llm_class_id"] = choice_id
             results[ridx]["llm_class_name"] = choice_name
             results[ridx]["llm_reasoning"] = reasoning or ""
 
+        # autosave every N completed LLM items
+        if autosave_every and autosave_every > 0:
+            completed_after_this = pbar_llm.n + 1
+            if completed_after_this % autosave_every == 0:
+                _autosave_now()
+
         pbar_llm.update(1)
 
     pbar_llm.close()
+
+    # final autosave (if enabled)
+    if autosave_every and autosave_every > 0:
+        _autosave_now()
+
     print("\nMatching completed!\n")
     return pd.DataFrame(results)
 
@@ -709,6 +802,25 @@ def main():
         help="Only call LLM if (top1 - top2) cosine margin is below this value, e.g. 0.03",
     )
 
+    # NEW: autosave/resume/timeout
+    parser.add_argument(
+        "--autosave_every",
+        type=int,
+        default=0,
+        help="Autosave partial results every N LLM items (0 disables).",
+    )
+    parser.add_argument(
+        "--resume_partial",
+        action="store_true",
+        help="If partial autosave exists, resume and skip items that already have llm_class_id filled.",
+    )
+    parser.add_argument(
+        "--llm_timeout_s",
+        type=int,
+        default=0,
+        help="Timeout (seconds) for each Gemini call. 0 disables.",
+    )
+
     parser.add_argument("--output", "-o", default="item_class_assignments_merged.xlsx")
 
     args = parser.parse_args()
@@ -761,6 +873,10 @@ def main():
 
         print(f"Sampling enabled: using {len(items_df)} items (seed={args.sample_seed}).")
 
+    # autosave file sits next to output (same base name)
+    out_path = Path(args.output)
+    autosave_path = out_path.with_suffix("").as_posix() + ".partial.xlsx"
+
     results_df = assign_classes(
         items_df=items_df,
         classes_df=classes_df,
@@ -784,6 +900,10 @@ def main():
         llm_retries=args.llm_retries,
         llm_retry_delay=args.llm_retry_delay,
         llm_only_if_margin_below=args.llm_only_if_margin_below,
+        autosave_every=int(args.autosave_every or 0),
+        autosave_path=autosave_path,
+        resume_partial=bool(args.resume_partial),
+        llm_timeout_s=float(args.llm_timeout_s or 0),
     )
 
     # Merge results with items
@@ -801,6 +921,9 @@ def main():
 
     merged.to_excel(args.output, index=False)
     print(f"\nDone! Saved merged file with {len(merged)} rows to '{args.output}'")
+
+    if args.autosave_every and int(args.autosave_every) > 0:
+        print(f"Partial autosave file: '{autosave_path}'")
 
 
 if __name__ == "__main__":
